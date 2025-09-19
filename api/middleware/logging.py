@@ -1,5 +1,5 @@
 """
-Request logging middleware with correlation ID
+Request logging middleware with correlation ID and Prometheus metrics
 """
 import time
 import json
@@ -7,6 +7,12 @@ import uuid
 from fastapi import Request, Response, FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Callable
+from lib.prometheus_metrics import (
+    http_requests_total,
+    http_request_duration_seconds,
+    http_response_size_bytes,
+    update_uptime
+)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -23,10 +29,40 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Calculate duration
-        duration_ms = (time.time() - start_time) * 1000
+        duration_seconds = time.time() - start_time
+        duration_ms = duration_seconds * 1000
 
         # Add request ID to response headers
         response.headers["X-Request-ID"] = request_id
+
+        # Update Prometheus metrics
+        endpoint = request.url.path
+        method = request.method
+        status = str(response.status_code)
+
+        # Don't track metrics endpoint itself
+        if endpoint != "/metrics":
+            http_requests_total.labels(
+                method=method,
+                endpoint=endpoint,
+                status=status
+            ).inc()
+
+            http_request_duration_seconds.labels(
+                method=method,
+                endpoint=endpoint
+            ).observe(duration_seconds)
+
+            # Try to get response size
+            content_length = response.headers.get("content-length")
+            if content_length:
+                http_response_size_bytes.labels(
+                    method=method,
+                    endpoint=endpoint
+                ).observe(int(content_length))
+
+        # Update uptime
+        update_uptime()
 
         # Log request (JSON format for structured logging)
         log_data = {

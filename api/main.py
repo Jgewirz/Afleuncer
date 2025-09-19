@@ -5,11 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
+from prometheus_client import make_asgi_app
 
 from lib.db import db
 from lib.settings import settings
 from lib.rate_limiter import rate_limiter
 from lib.redis_client import redis_client
+from lib.prometheus_metrics import update_uptime, health_check_status
 from api.middleware.logging import RequestLoggingMiddleware
 from api.routes.health import router as health_router
 from api.routes.redirect import router as redirect_router
@@ -40,9 +42,15 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.redis = redis_client
 
+    # Update health metrics
+    health_check_status.labels(check_type='database').set(1)
+    health_check_status.labels(check_type='redis').set(1 if redis_connected else 0)
+    health_check_status.labels(check_type='api').set(1)
+
     print(f"[OK] SkinStack API ready at http://0.0.0.0:8000")
     print(f"[OK] Environment: {settings.environment}")
     print(f"[OK] Platform fee: {settings.platform_fee_rate * 100}%")
+    print(f"[OK] Metrics available at http://0.0.0.0:8000/metrics")
     yield
     # Shutdown
     await db.disconnect()
@@ -56,6 +64,9 @@ app = FastAPI(
     version="0.0.1",
     lifespan=lifespan
 )
+
+# Create Prometheus metrics app
+metrics_app = make_asgi_app()
 
 # Configure CORS middleware
 # In production, replace with specific allowed origins
@@ -97,6 +108,9 @@ app.add_middleware(RequestLoggingMiddleware)
 
 # Add rate limiting middleware
 app.middleware("http")(rate_limiter)
+
+# Mount Prometheus metrics endpoint
+app.mount("/metrics", metrics_app)
 
 # Include routers
 app.include_router(health_router)  # Health check endpoints
